@@ -1,6 +1,6 @@
-# NOVA AI — Ask anything. Build anything.
+# BLUE AI — Ask anything. Build anything.
 
-NOVA AI is a polished full-stack AI assistant for everyday questions, coding, learning, research, document analysis, image understanding, and creative work.
+BLUE AI is a polished full-stack AI assistant for everyday questions, coding, learning, research, document analysis, image understanding, and creative work.
 
 ## What is included
 
@@ -10,7 +10,7 @@ NOVA AI is a polished full-stack AI assistant for everyday questions, coding, le
 - Persistent conversations and messages in the project database
 - Conversation history, search, rename, delete, and keyboard shortcuts
 - Server-side LLM calls through the built-in Manus provider abstraction
-- Model selector for NOVA Fast, NOVA Balanced, and NOVA Reasoning
+- Model selector for BLUE Fast, BLUE Balanced, and BLUE Reasoning
 - Chat, Search, Study, Coding, Analyze, and Creative modes
 - Markdown assistant responses with copy and text-to-speech controls
 - Image and document attachment upload through secure object storage
@@ -51,13 +51,13 @@ The migration is in `drizzle/0001_youthful_praxagora.sql` and has been applied t
 
 ## AI configuration
 
-NOVA calls the server-side helper at `server/_core/llm.ts`, so provider credentials never reach browser code. The project runtime supplies the built-in Forge URL and key through its managed environment. The current mapping is:
+BLUE calls the server-side helper at `server/_core/llm.ts`, so provider credentials never reach browser code. The project runtime supplies the built-in Forge URL and key through its managed environment. The current mapping is:
 
 | UI model | Built-in model |
 | --- | --- |
-| NOVA Fast | `gemini-3-flash-preview` |
-| NOVA Balanced | `gemini-3-flash-preview` |
-| NOVA Reasoning | `gemini-3.1-pro-preview` |
+| BLUE Fast | `gemini-3-flash-preview` |
+| BLUE Balanced | `gemini-3-flash-preview` |
+| BLUE Reasoning | `gemini-3.1-pro-preview` |
 
 Provider failures are returned as friendly user-facing errors rather than raw stack traces.
 
@@ -71,7 +71,7 @@ The scaffold uses Manus OAuth. The client calls `startLogin()` only from user ac
 
 ## Notes on streaming
 
-The built-in `invokeLLM()` helper currently returns a completed response rather than exposing an SSE stream. NOVA preserves the intended interaction by progressively revealing the returned assistant response in the chat UI and providing a stop control. The server abstraction is isolated in `server/routers.ts`, so native SSE streaming can be added later without changing the product surface.
+The built-in `invokeLLM()` helper currently returns a completed response rather than exposing an SSE stream. BLUE preserves the intended interaction by progressively revealing the returned assistant response in the chat UI and providing a stop control. The server abstraction is isolated in `server/routers.ts`, so native SSE streaming can be added later without changing the product surface.
 
 ## Verification
 
