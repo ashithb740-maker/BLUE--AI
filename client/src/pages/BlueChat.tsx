@@ -1,3 +1,3 @@
-import BlueChatFixed from "./BlueChatFixed";
+import BlueChatV2 from "./BlueChatV2";
 
-export default BlueChatFixed;
+export default BlueChatV2;
