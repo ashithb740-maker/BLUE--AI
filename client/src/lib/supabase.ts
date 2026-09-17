@@ -5,6 +5,7 @@ export type AuthUser = { id: string; email?: string | null };
 export type Session = { access_token: string; refresh_token: string; user: AuthUser };
 
 const SESSION_KEY = "blue-auth-session";
+const SITE_URL = window.location.origin;
 
 function headers(accessToken?: string) {
   return {
@@ -37,13 +38,35 @@ export function setSession(session: Session | null) {
 }
 
 export async function signUp(email: string, password: string) {
-  const data = await request("/auth/v1/signup", { method: "POST", body: JSON.stringify({ email, password }) });
+  const data = await request("/auth/v1/signup", {
+    method: "POST",
+    body: JSON.stringify({
+      email,
+      password,
+      options: {
+        email_redirect_to: `${SITE_URL}/auth`,
+      },
+    }),
+  });
+
   if (data?.access_token && data?.refresh_token) {
     const session = { access_token: data.access_token, refresh_token: data.refresh_token, user: data.user } as Session;
     setSession(session);
     return { session, needsConfirmation: false };
   }
+
   return { session: null, needsConfirmation: true };
+}
+
+export async function resendConfirmation(email: string) {
+  return request("/auth/v1/resend", {
+    method: "POST",
+    body: JSON.stringify({
+      type: "signup",
+      email,
+      options: { email_redirect_to: `${SITE_URL}/auth` },
+    }),
+  });
 }
 
 export async function signIn(email: string, password: string) {
