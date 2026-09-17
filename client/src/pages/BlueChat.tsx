@@ -3,7 +3,6 @@ import { ArrowUp, Bot, ChevronLeft, Copy, Menu, Plus, Sparkles, User, X } from "
 import { Link } from "wouter";
 import { Streamdown } from "streamdown";
 import { Button } from "@/components/ui/button";
-import "streamdown/styles.css";
 
 type Message = { role: "user" | "model"; text: string };
 
