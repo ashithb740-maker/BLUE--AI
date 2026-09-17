@@ -20,7 +20,7 @@ export default async function handler(req: RequestWithBody, res: ResponseLike) {
 
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) {
-    return res.status(500).json({ error: "GEMINI_API_KEY is not configured" });
+    return res.status(500).json({ error: "AI service is not configured" });
   }
 
   let body: any;
@@ -53,7 +53,7 @@ export default async function handler(req: RequestWithBody, res: ResponseLike) {
 
   try {
     const response = await fetch(
-      "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent",
+      "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent",
       {
         method: "POST",
         headers: {
@@ -73,8 +73,8 @@ export default async function handler(req: RequestWithBody, res: ResponseLike) {
     const data = await response.json();
 
     if (!response.ok) {
-      const errorMessage = data?.error?.message || "Gemini request failed";
-      return res.status(response.status).json({ error: errorMessage });
+      console.error("AI provider request failed:", data?.error?.message || response.status);
+      return res.status(response.status).json({ error: "The AI service could not complete that request." });
     }
 
     const text = (data?.candidates?.[0]?.content?.parts ?? [])
@@ -83,12 +83,12 @@ export default async function handler(req: RequestWithBody, res: ResponseLike) {
       .trim();
 
     if (!text) {
-      return res.status(502).json({ error: "Gemini returned an empty response" });
+      return res.status(502).json({ error: "The AI service returned an empty response." });
     }
 
     return res.status(200).json({ text });
   } catch (error) {
-    console.error("Gemini API error:", error);
-    return res.status(500).json({ error: "Unable to contact Gemini" });
+    console.error("AI API error:", error);
+    return res.status(500).json({ error: "Unable to contact the AI service." });
   }
 }
