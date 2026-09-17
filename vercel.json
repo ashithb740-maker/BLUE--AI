@@ -1,8 +1,9 @@
 {
   "version": 2,
+  "framework": "vite",
+  "installCommand": "pnpm install --no-frozen-lockfile",
   "buildCommand": "pnpm build",
   "outputDirectory": "dist/public",
-  "framework": "vite",
   "rewrites": [
     {
       "source": "/api/gemini",
