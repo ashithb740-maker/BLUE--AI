@@ -1,7 +1,7 @@
-import { FormEvent, useState } from "react";
+import { FormEvent, useEffect, useState } from "react";
 import { ArrowLeft, ArrowRight, LockKeyhole, Mail, Sparkles } from "lucide-react";
 import { Link, useLocation } from "wouter";
-import { signIn, signUp } from "@/lib/supabase";
+import { getSession, setSession, signIn, signUp } from "@/lib/supabase";
 import { Button } from "@/components/ui/button";
 
 export default function Auth() {
@@ -11,6 +11,20 @@ export default function Auth() {
   const [loading, setLoading] = useState(false); const [error, setError] = useState(""); const [message, setMessage] = useState("");
   const prompt = (() => { try { return new URLSearchParams(window.location.search).get("prompt")?.trim() || ""; } catch { return ""; } })();
   const goChat = () => navigate(prompt ? `/chat?prompt=${encodeURIComponent(prompt)}` : "/chat");
+
+  useEffect(() => {
+    if (getSession()) return;
+    try {
+      const hash = new URLSearchParams(window.location.hash.replace(/^#/, ""));
+      const accessToken = hash.get("access_token"); const refreshToken = hash.get("refresh_token");
+      if (accessToken && refreshToken) {
+        const user = JSON.parse(atob(accessToken.split(".")[1].replace(/-/g, "+").replace(/_/g, "/")));
+        setSession({ access_token: accessToken, refresh_token: refreshToken, user: { id: user.sub, email: user.email || null } });
+        window.history.replaceState({}, "", window.location.pathname + window.location.search);
+        goChat();
+      }
+    } catch { /* normal sign-in page */ }
+  }, []);
 
   const submit = async (event: FormEvent) => {
     event.preventDefault(); setError(""); setMessage(""); setLoading(true);
