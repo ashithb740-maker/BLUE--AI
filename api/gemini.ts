@@ -3,7 +3,7 @@ type RequestWithBody = { method?: string; body?: unknown; headers?: Record<strin
 type ResponseLike = { status: (code: number) => ResponseLike; json: (value: unknown) => ResponseLike };
 const SUPABASE_URL = process.env.VITE_SUPABASE_URL || "";
 const SUPABASE_KEY = process.env.VITE_SUPABASE_PUBLISHABLE_KEY || "";
-const FREE_DAILY_TOKENS = 20000;
+const FREE_DAILY_TOKENS = 5000;
 const BLUE_SYSTEM_PROMPT = `You are BLUE, a thoughtful, capable, and friendly AI assistant.
 
 Your goal is to give answers that feel natural, polished, useful, and easy to understand. Think through the user's request before answering, but do not reveal private chain-of-thought or hidden reasoning. Give the useful conclusion, explanation, and concise reasoning instead.
@@ -45,7 +45,7 @@ export default async function handler(req: RequestWithBody, res: ResponseLike) {
   const estimatedTokens = Math.min(6000, Math.max(500, Math.ceil((message.length + JSON.stringify(history.slice(-10)).length) / 4) + 4096));
   const quotaResponse = await supabase("/rest/v1/rpc/reserve_ai_tokens", bearer, { method: "POST", body: JSON.stringify({ p_tokens: estimatedTokens, p_free_limit: FREE_DAILY_TOKENS }) });
   const quotaRows = quotaResponse.ok ? await quotaResponse.json() : null; const quota = Array.isArray(quotaRows) ? quotaRows[0] : quotaRows;
-  if (!quotaResponse.ok || !quota?.allowed) return res.status(429).json({ error: "You have reached today's free BLUE limit. Upgrade to BLUE Pro for ₹11/year and keep chatting without the daily limit.", code: "DAILY_LIMIT", remainingTokens: quota?.remaining_tokens ?? 0 });
+  if (!quotaResponse.ok || !quota?.allowed) return res.status(429).json({ error: "You've used today's 5,000 free BLUE tokens. Your free allowance resets at 12:00 AM IST. Upgrade to continue chatting now.", code: "DAILY_LIMIT", remainingTokens: quota?.remaining_tokens ?? 0 });
 
   const safeHistory: GeminiMessage[] = history.filter((item: any) => (item?.role === "user" || item?.role === "model") && typeof item?.text === "string" && item.text.trim()).slice(-20).map((item: any) => ({ role: item.role, parts: [{ text: item.text.trim() }] }));
   safeHistory.push({ role: "user", parts: [{ text: `[Current date/time context: ${new Intl.DateTimeFormat("en-US", { dateStyle: "full", timeStyle: "long", timeZone }).format(new Date())}; timezone: ${timeZone}]\n\n${message}` }] });
