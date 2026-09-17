@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { ArrowUp, Bot, ChevronLeft, Copy, Menu, Plus, Sparkles, User, X, LogOut, Crown, Loader2 } from "lucide-react";
+import { ArrowUp, Bot, ChevronLeft, Copy, Menu, Plus, Sparkles, User, X, LogOut, Crown, Loader2, CheckCircle2, ExternalLink } from "lucide-react";
 import { Link, useLocation } from "wouter";
 import { Streamdown } from "streamdown";
 import { Button } from "@/components/ui/button";
@@ -8,15 +8,12 @@ import { dbFetch, getProfile, getSession, refreshSession, setSession, signOut } 
 type Message = { role: "user" | "model"; text: string };
 type Conversation = { id: string; title: string; updated_at: string };
 type Profile = { plan: "free" | "pro"; premium_until: string | null };
-declare global { interface Window { Razorpay?: any } }
 
 const FREE_TOKENS = 5000;
+const PRO_PRICE = 11;
+const UPI_ID = "ashithb740@okicici";
 function getInitialPrompt() { try { return new URLSearchParams(window.location.search).get("prompt")?.trim() || ""; } catch { return ""; } }
 function getTimeZone() { try { return Intl.DateTimeFormat().resolvedOptions().timeZone || "Asia/Kolkata"; } catch { return "Asia/Kolkata"; } }
-async function loadRazorpay() {
-  if (window.Razorpay) return;
-  await new Promise<void>((resolve, reject) => { const script = document.createElement("script"); script.src = "https://checkout.razorpay.com/v1/checkout.js"; script.onload = () => resolve(); script.onerror = () => reject(new Error("Unable to load payment checkout.")); document.body.appendChild(script); });
-}
 
 export default function BlueChatFixed() {
   const [, navigate] = useLocation();
@@ -32,6 +29,10 @@ export default function BlueChatFixed() {
   const [accountOpen, setAccountOpen] = useState(false);
   const [upgradeLoading, setUpgradeLoading] = useState(false);
   const [error, setError] = useState("");
+  const [paymentOpen, setPaymentOpen] = useState(false);
+  const [paymentReference, setPaymentReference] = useState("");
+  const [utr, setUtr] = useState("");
+  const [paymentSubmitted, setPaymentSubmitted] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -89,43 +90,55 @@ export default function BlueChatFixed() {
 
   const copyMessage = async (index: number, text: string) => { try { await navigator.clipboard.writeText(text); setCopied(index); window.setTimeout(() => setCopied(null), 1200); } catch {} };
 
-  const upgrade = async () => {
+  const openPayment = async () => {
+    setUpgradeLoading(true); setError(""); setPaymentSubmitted(false); setUtr("");
+    try {
+      const session = getSession();
+      if (!session) { navigate("/auth"); return; }
+      const response = await fetch("/api/payment", { method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${session.access_token}` }, body: JSON.stringify({ action: "payment-info" }) });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.error || "Unable to open payment.");
+      setPaymentReference(data.reference || `BLUE-${Date.now()}`);
+      setPaymentOpen(true);
+      setAccountOpen(false);
+    } catch (e) { setError(e instanceof Error ? e.message : "Payment could not be started."); }
+    finally { setUpgradeLoading(false); }
+  };
+
+  const submitPayment = async () => {
+    const value = utr.trim();
+    if (!value) { setError("Enter the UTR / transaction reference number after completing the payment."); return; }
     setUpgradeLoading(true); setError("");
     try {
-      await loadRazorpay(); const session = getSession(); if (!session) { navigate("/auth"); return; }
-      const orderResponse = await fetch("/api/payment", { method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${session.access_token}` }, body: JSON.stringify({ action: "create-order" }) });
-      const order = await orderResponse.json(); if (!orderResponse.ok) throw new Error(order.error || "Unable to start payment.");
-      await new Promise<void>((resolve, reject) => {
-        const checkout = new window.Razorpay({ key: order.keyId, amount: order.amount, currency: order.currency, name: "BLUE AI", description: "BLUE Pro — 1 year", order_id: order.orderId, prefill: { email: order.email }, theme: { color: "#3b82f6" }, handler: async (result: any) => {
-          try {
-            const verifyResponse = await fetch("/api/payment", { method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${session.access_token}` }, body: JSON.stringify({ action: "verify", ...result }) });
-            const verified = await verifyResponse.json(); if (!verifyResponse.ok) throw new Error(verified.error || "Payment verification failed.");
-            setProfile({ plan: "pro", premium_until: verified.premiumUntil }); setAccountOpen(false); resolve();
-          } catch (e) { reject(e); }
-        } });
-        checkout.on("payment.failed", (failure: any) => reject(new Error(failure?.error?.description || "Payment failed."))); checkout.open();
-      });
-    } catch (e) { setError(e instanceof Error ? e.message : "Payment could not be completed."); }
+      const session = getSession(); if (!session) { navigate("/auth"); return; }
+      const response = await fetch("/api/payment", { method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${session.access_token}` }, body: JSON.stringify({ action: "submit-utr", utr: value, reference: paymentReference }) });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.error || "Unable to submit payment.");
+      setPaymentSubmitted(true);
+    } catch (e) { setError(e instanceof Error ? e.message : "Payment submission failed."); }
     finally { setUpgradeLoading(false); }
   };
 
   const logout = async () => { await signOut(); navigate("/auth"); };
   const freeLabel = remainingTokens === null ? `${FREE_TOKENS.toLocaleString()} free tokens/day` : `${remainingTokens.toLocaleString()} free tokens remaining today`;
+  const upiUri = `upi://pay?pa=${encodeURIComponent(UPI_ID)}&pn=${encodeURIComponent("BLUE AI")}&am=${PRO_PRICE.toFixed(2)}&cu=INR&tn=${encodeURIComponent("BLUE Pro - 1 year")}`;
+  const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=320x320&margin=12&data=${encodeURIComponent(upiUri)}`;
 
   return (
     <div className="flex h-screen overflow-hidden bg-[#08090d] text-white">
       <div className="pointer-events-none fixed inset-0 z-0 blue-grid opacity-25" />
       <div className="pointer-events-none fixed -left-48 top-[-20rem] z-0 h-[42rem] w-[42rem] rounded-full bg-blue-600/15 blur-[120px]" />
+      {paymentOpen && <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/75 p-4 backdrop-blur-md"><div className="w-full max-w-md overflow-hidden rounded-3xl border border-white/10 bg-[#11131a] shadow-2xl"><div className="flex items-center justify-between border-b border-white/[.08] px-5 py-4"><div><h2 className="font-semibold">Upgrade to BLUE Pro</h2><p className="mt-0.5 text-xs text-white/40">₹11 · 1 year</p></div><button type="button" onClick={() => setPaymentOpen(false)} className="rounded-xl p-2 text-white/40 hover:bg-white/10 hover:text-white"><X className="size-4" /></button></div>{paymentSubmitted ? <div className="px-6 py-10 text-center"><div className="mx-auto flex size-14 items-center justify-center rounded-full bg-emerald-400/10"><CheckCircle2 className="size-7 text-emerald-300" /></div><h3 className="mt-5 text-lg font-semibold">Payment submitted</h3><p className="mt-2 text-sm leading-6 text-white/45">Your payment reference has been submitted for verification. Pro will be activated after the payment is verified.</p><Button type="button" onClick={() => setPaymentOpen(false)} className="mt-6 w-full rounded-xl bg-blue-500 hover:bg-blue-400">Done</Button></div> : <div className="px-5 py-5"><div className="rounded-2xl border border-white/10 bg-white p-4"><img src={qrUrl} alt="BLUE AI UPI payment QR code" className="mx-auto block aspect-square w-64 rounded-xl" /></div><div className="mt-4 rounded-2xl border border-white/[.08] bg-white/[.03] p-4"><div className="flex items-center justify-between"><span className="text-xs text-white/40">UPI ID</span><button type="button" onClick={() => navigator.clipboard?.writeText(UPI_ID)} className="text-sm font-semibold text-cyan-200 hover:text-cyan-100">{UPI_ID}</button></div><div className="mt-3 flex items-center justify-between"><span className="text-xs text-white/40">Amount</span><span className="text-sm font-semibold">₹{PRO_PRICE}</span></div></div><a href={upiUri} className="mt-3 flex h-11 items-center justify-center gap-2 rounded-xl bg-blue-500 text-sm font-semibold hover:bg-blue-400">Pay ₹{PRO_PRICE} with UPI <ExternalLink className="size-4" /></a><p className="mt-4 text-center text-[11px] leading-5 text-white/35">Scan the QR or use the UPI button. After payment, enter the UTR shown in your UPI app.</p><div className="mt-4"><label className="text-xs font-medium text-white/60">UTR / Transaction ID</label><input value={utr} onChange={e => setUtr(e.target.value)} placeholder="Enter your UTR after payment" className="mt-2 h-11 w-full rounded-xl border border-white/10 bg-white/[.04] px-3 text-sm text-white outline-none placeholder:text-white/20 focus:border-blue-400/50" /></div><p className="mt-3 rounded-xl border border-amber-300/10 bg-amber-300/[.05] px-3 py-2 text-[10px] leading-4 text-amber-100/55">Reference: {paymentReference}</p><Button type="button" onClick={submitPayment} disabled={upgradeLoading || !utr.trim()} className="mt-4 h-11 w-full rounded-xl bg-blue-500 hover:bg-blue-400 disabled:opacity-40">{upgradeLoading ? <Loader2 className="size-4 animate-spin" /> : "I've Paid · Submit for Verification"}</Button></div>}</div></div>}
       <aside className={`${sidebarOpen ? "translate-x-0" : "-translate-x-full"} fixed inset-y-0 left-0 z-30 flex w-[280px] flex-col border-r border-white/[.08] bg-[#0b0d12]/95 p-3 backdrop-blur-xl transition-transform md:relative md:translate-x-0`}>
         <div className="flex items-center justify-between px-2 py-2"><Link href="/" className="flex items-center gap-2.5"><span className="blue-mark"><Sparkles className="size-3.5" /></span><span className="font-semibold tracking-[-.04em]">BLUE <span className="text-white/35">AI</span></span></Link><button type="button" className="rounded-lg p-2 text-white/45 hover:bg-white/10 hover:text-white md:hidden" onClick={() => setSidebarOpen(false)}><X className="size-4" /></button></div>
         <Button type="button" onClick={newChat} variant="outline" className="mt-5 h-10 justify-start gap-2 rounded-xl border-white/10 bg-white/[.03] text-white hover:bg-white/[.08]"><Plus className="size-4" /> New chat</Button>
         <div className="mt-7 px-2 text-[10px] font-semibold uppercase tracking-[.18em] text-white/25">Saved chats</div>
         <div className="mt-2 flex-1 space-y-1 overflow-y-auto pr-1">{conversations.length > 0 ? conversations.map(chat => <button key={chat.id} type="button" onClick={() => loadConversation(chat.id)} className={`w-full rounded-xl px-3 py-2.5 text-left text-xs transition ${chat.id === conversationId ? "bg-blue-400/10 text-white" : "text-white/45 hover:bg-white/[.05] hover:text-white/75"}`}>{chat.title}</button>) : <p className="px-3 py-2 text-xs text-white/20">Your saved conversations will appear here.</p>}</div>
-        <div className="rounded-2xl border border-white/[.08] bg-white/[.025] p-3"><div className="flex items-center justify-between"><div className="flex items-center gap-2 text-xs font-medium text-white/65"><Crown className={`size-3.5 ${profile.plan === "pro" ? "text-amber-300" : "text-cyan-300"}`} />{profile.plan === "pro" ? "BLUE Pro" : "BLUE Free"}</div>{profile.plan === "free" && <button type="button" onClick={upgrade} disabled={upgradeLoading} className="text-[10px] font-semibold text-cyan-300 hover:text-cyan-200">₹11/year</button>}</div>{profile.plan === "free" ? <p className="mt-2 text-[10px] leading-4 text-white/30">5,000 free tokens/day · resets at 12:00 AM IST</p> : <p className="mt-2 text-[10px] leading-4 text-amber-200/50">Pro active until {profile.premium_until ? new Date(profile.premium_until).toLocaleDateString() : "next year"}.</p>}</div>
+        <div className="rounded-2xl border border-white/[.08] bg-white/[.025] p-3"><div className="flex items-center justify-between"><div className="flex items-center gap-2 text-xs font-medium text-white/65"><Crown className={`size-3.5 ${profile.plan === "pro" ? "text-amber-300" : "text-cyan-300"}`} />{profile.plan === "pro" ? "BLUE Pro" : "BLUE Free"}</div>{profile.plan === "free" && <button type="button" onClick={openPayment} disabled={upgradeLoading} className="text-[10px] font-semibold text-cyan-300 hover:text-cyan-200">₹11/year</button>}</div>{profile.plan === "free" ? <p className="mt-2 text-[10px] leading-4 text-white/30">5,000 free tokens/day · resets at 12:00 AM IST</p> : <p className="mt-2 text-[10px] leading-4 text-amber-200/50">Pro active until {profile.premium_until ? new Date(profile.premium_until).toLocaleDateString() : "next year"}.</p>}</div>
       </aside>
       {sidebarOpen && <button type="button" className="fixed inset-0 z-20 bg-black/60 md:hidden" onClick={() => setSidebarOpen(false)} aria-label="Close sidebar" />}
       <main className="relative z-10 flex min-w-0 flex-1 flex-col">
-        <header className="flex h-16 shrink-0 items-center justify-between border-b border-white/[.07] px-4 sm:px-6"><div className="flex items-center gap-3"><button type="button" className="rounded-lg p-2 text-white/50 hover:bg-white/10 hover:text-white md:hidden" onClick={() => setSidebarOpen(true)}><Menu className="size-5" /></button><Link href="/" className="text-sm text-white/40 hover:text-white"><ChevronLeft className="mr-1 inline size-4" />Home</Link></div><div className="relative flex items-center gap-2"><span className="size-1.5 rounded-full bg-emerald-300" /><span className="text-xs text-white/45">AI online</span><button type="button" onClick={() => setAccountOpen(v => !v)} className="ml-2 flex items-center gap-2 rounded-xl border border-white/10 bg-white/[.04] px-2.5 py-1.5 text-xs text-white/60 hover:bg-white/[.08]"><User className="size-3.5" />Account</button>{accountOpen && <div className="absolute right-0 top-11 z-40 w-64 rounded-2xl border border-white/10 bg-[#11131a] p-3 shadow-2xl"><p className="truncate px-2 py-2 text-xs text-white/55">{getSession()?.user.email}</p>{profile.plan === "free" ? <button type="button" onClick={upgrade} disabled={upgradeLoading} className="mb-1 flex w-full items-center gap-2 rounded-xl px-2 py-2 text-xs text-cyan-200 hover:bg-white/[.06]">{upgradeLoading ? <Loader2 className="size-3.5 animate-spin" /> : <Crown className="size-3.5" />}Upgrade to Pro · ₹11/year</button> : <div className="px-2 py-2 text-[11px] text-amber-200/70">Pro membership active ✨</div>}<button type="button" onClick={logout} className="flex w-full items-center gap-2 rounded-xl px-2 py-2 text-xs text-white/50 hover:bg-white/[.06] hover:text-white"><LogOut className="size-3.5" />Sign out</button></div>}</div></header>
+        <header className="flex h-16 shrink-0 items-center justify-between border-b border-white/[.07] px-4 sm:px-6"><div className="flex items-center gap-3"><button type="button" className="rounded-lg p-2 text-white/50 hover:bg-white/10 hover:text-white md:hidden" onClick={() => setSidebarOpen(true)}><Menu className="size-5" /></button><Link href="/" className="text-sm text-white/40 hover:text-white"><ChevronLeft className="mr-1 inline size-4" />Home</Link></div><div className="relative flex items-center gap-2"><span className="size-1.5 rounded-full bg-emerald-300" /><span className="text-xs text-white/45">AI online</span><button type="button" onClick={() => setAccountOpen(v => !v)} className="ml-2 flex items-center gap-2 rounded-xl border border-white/10 bg-white/[.04] px-2.5 py-1.5 text-xs text-white/60 hover:bg-white/[.08]"><User className="size-3.5" />Account</button>{accountOpen && <div className="absolute right-0 top-11 z-40 w-64 rounded-2xl border border-white/10 bg-[#11131a] p-3 shadow-2xl"><p className="truncate px-2 py-2 text-xs text-white/55">{getSession()?.user.email}</p>{profile.plan === "free" ? <button type="button" onClick={openPayment} disabled={upgradeLoading} className="mb-1 flex w-full items-center gap-2 rounded-xl px-2 py-2 text-xs text-cyan-200 hover:bg-white/[.06]">{upgradeLoading ? <Loader2 className="size-3.5 animate-spin" /> : <Crown className="size-3.5" />}Upgrade to Pro · ₹11/year</button> : <div className="px-2 py-2 text-[11px] text-amber-200/70">Pro membership active ✨</div>}<button type="button" onClick={logout} className="flex w-full items-center gap-2 rounded-xl px-2 py-2 text-xs text-white/50 hover:bg-white/[.06] hover:text-white"><LogOut className="size-3.5" />Sign out</button></div>}</div></header>
         <div className="flex-1 overflow-y-auto px-4 py-8 sm:px-8"><div className="mx-auto max-w-3xl">
           {error && <div className="mb-5 rounded-xl border border-red-400/20 bg-red-400/10 px-4 py-3 text-xs leading-5 text-red-200">{error}</div>}
           {messages.length === 0 ? (
