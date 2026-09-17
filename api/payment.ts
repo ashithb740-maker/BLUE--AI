@@ -1,50 +1,113 @@
-import crypto from "node:crypto";
 type Req = { method?: string; body?: unknown; headers?: Record<string, string | string[] | undefined> };
 type Res = { status: (code: number) => Res; json: (value: unknown) => Res };
+
 const SUPABASE_URL = process.env.VITE_SUPABASE_URL || "";
 const SUPABASE_KEY = process.env.VITE_SUPABASE_PUBLISHABLE_KEY || "";
 const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || "";
-const RAZORPAY_KEY_ID = process.env.RAZORPAY_KEY_ID || "";
-const RAZORPAY_KEY_SECRET = process.env.RAZORPAY_KEY_SECRET || "";
 const PRICE_PAISE = 1100;
-function bearer(req: Req) { const value = req.headers?.authorization || req.headers?.Authorization; return Array.isArray(value) ? value[0] : value || ""; }
-async function sb(path: string, token: string, options: RequestInit = {}) { return fetch(`${SUPABASE_URL}${path}`, { ...options, headers: { apikey: SUPABASE_KEY, Authorization: token, "Content-Type": "application/json", ...(options.headers || {}) } }); }
-async function sbAdmin(path: string, options: RequestInit = {}) { return fetch(`${SUPABASE_URL}${path}`, { ...options, headers: { apikey: SUPABASE_SERVICE_KEY, Authorization: `Bearer ${SUPABASE_SERVICE_KEY}`, "Content-Type": "application/json", ...(options.headers || {}) } }); }
-async function razorpay(path: string, options: RequestInit = {}) { const credentials = Buffer.from(`${RAZORPAY_KEY_ID}:${RAZORPAY_KEY_SECRET}`).toString("base64"); return fetch(`https://api.razorpay.com/v1${path}`, { ...options, headers: { Authorization: `Basic ${credentials}`, "Content-Type": "application/json", ...(options.headers || {}) } }); }
+const UPI_ID = "ashithb740@okicici";
+
+function bearer(req: Req) {
+  const value = req.headers?.authorization || req.headers?.Authorization;
+  return Array.isArray(value) ? value[0] : value || "";
+}
+
+async function sb(path: string, token: string, options: RequestInit = {}) {
+  return fetch(`${SUPABASE_URL}${path}`, {
+    ...options,
+    headers: {
+      apikey: SUPABASE_KEY,
+      Authorization: token,
+      "Content-Type": "application/json",
+      ...(options.headers || {}),
+    },
+  });
+}
+
+async function sbAdmin(path: string, options: RequestInit = {}) {
+  return fetch(`${SUPABASE_URL}${path}`, {
+    ...options,
+    headers: {
+      apikey: SUPABASE_SERVICE_KEY,
+      Authorization: `Bearer ${SUPABASE_SERVICE_KEY}`,
+      "Content-Type": "application/json",
+      ...(options.headers || {}),
+    },
+  });
+}
 
 export default async function handler(req: Req, res: Res) {
   if (req.method !== "POST") return res.status(405).json({ error: "Method not allowed" });
   const token = bearer(req);
   if (!token.startsWith("Bearer ")) return res.status(401).json({ error: "Please sign in first." });
-  if (!SUPABASE_URL || !SUPABASE_KEY || !SUPABASE_SERVICE_KEY) return res.status(500).json({ error: "Payment service is not fully configured." });
+  if (!SUPABASE_URL || !SUPABASE_KEY || !SUPABASE_SERVICE_KEY) {
+    return res.status(500).json({ error: "Payment service is not fully configured." });
+  }
+
   const auth = await sb("/auth/v1/user", token);
   if (!auth.ok) return res.status(401).json({ error: "Your session has expired. Please sign in again." });
   const user = await auth.json();
-  let body: any; try { body = typeof req.body === "string" ? JSON.parse(req.body) : req.body || {}; } catch { return res.status(400).json({ error: "Invalid request body." }); }
 
-  if (body.action === "create-order") {
-    if (!RAZORPAY_KEY_ID || !RAZORPAY_KEY_SECRET) return res.status(500).json({ error: "Razorpay is not configured yet." });
-    const orderResponse = await razorpay("/orders", { method: "POST", body: JSON.stringify({ amount: PRICE_PAISE, currency: "INR", receipt: `blue_${user.id.slice(0, 8)}_${Date.now()}`, notes: { user_id: user.id, plan: "blue_pro_yearly" } }) });
-    const order = await orderResponse.json(); if (!orderResponse.ok) return res.status(502).json({ error: "Unable to create the payment order." });
-    await sbAdmin("/rest/v1/payments", { method: "POST", headers: { Prefer: "return=minimal" }, body: JSON.stringify({ user_id: user.id, order_id: order.id, amount_paise: PRICE_PAISE, status: "created" }) });
-    return res.status(200).json({ keyId: RAZORPAY_KEY_ID, orderId: order.id, amount: PRICE_PAISE, currency: "INR", email: user.email || "" });
+  let body: any;
+  try {
+    body = typeof req.body === "string" ? JSON.parse(req.body) : req.body || {};
+  } catch {
+    return res.status(400).json({ error: "Invalid request body." });
   }
 
-  if (body.action === "verify") {
-    const orderId = String(body.razorpay_order_id || ""); const paymentId = String(body.razorpay_payment_id || ""); const signature = String(body.razorpay_signature || "");
-    if (!orderId || !paymentId || !signature || !RAZORPAY_KEY_SECRET) return res.status(400).json({ error: "Invalid payment verification data." });
-    const recordResponse = await sbAdmin(`/rest/v1/payments?order_id=eq.${encodeURIComponent(orderId)}&select=id,user_id,amount_paise,status&limit=1`); const records = await recordResponse.json(); const record = records?.[0];
-    if (!record || record.user_id !== user.id || record.status === "paid" || record.amount_paise !== PRICE_PAISE) return res.status(400).json({ error: "Payment order could not be verified." });
-    const expected = crypto.createHmac("sha256", RAZORPAY_KEY_SECRET).update(`${orderId}|${paymentId}`).digest("hex");
-    if (expected.length !== signature.length || !crypto.timingSafeEqual(Buffer.from(expected), Buffer.from(signature))) return res.status(400).json({ error: "Payment signature verification failed." });
-    const paymentResponse = await razorpay(`/payments/${encodeURIComponent(paymentId)}`); const payment = await paymentResponse.json();
-    if (!paymentResponse.ok || payment.status !== "captured" || payment.order_id !== orderId || payment.amount !== PRICE_PAISE || payment.currency !== "INR") return res.status(400).json({ error: "Payment is not captured or does not match this order." });
-
-    const currentProfileResponse = await sbAdmin(`/rest/v1/profiles?id=eq.${encodeURIComponent(user.id)}&select=premium_until&limit=1`); const currentRows = await currentProfileResponse.json();
-    const premiumUntil = new Date(); const existing = currentRows?.[0]?.premium_until ? new Date(currentRows[0].premium_until) : null; if (existing && existing > premiumUntil) premiumUntil.setTime(existing.getTime()); premiumUntil.setUTCFullYear(premiumUntil.getUTCFullYear() + 1);
-    await sbAdmin(`/rest/v1/payments?id=eq.${encodeURIComponent(record.id)}`, { method: "PATCH", body: JSON.stringify({ payment_id: paymentId, status: "paid" }) });
-    await sbAdmin(`/rest/v1/profiles?id=eq.${encodeURIComponent(user.id)}`, { method: "PATCH", body: JSON.stringify({ plan: "pro", premium_until: premiumUntil.toISOString(), updated_at: new Date().toISOString() }) });
-    return res.status(200).json({ success: true, plan: "pro", premiumUntil: premiumUntil.toISOString() });
+  if (body.action === "payment-info") {
+    const reference = `BLUE-${user.id.slice(0, 8).toUpperCase()}-${Date.now().toString().slice(-6)}`;
+    return res.status(200).json({
+      upiId: UPI_ID,
+      amount: 11,
+      amountPaise: PRICE_PAISE,
+      currency: "INR",
+      reference,
+      note: "BLUE Pro - 1 year",
+    });
   }
+
+  if (body.action === "submit-utr") {
+    const utr = String(body.utr || "").trim();
+    const reference = String(body.reference || "").trim();
+    if (!utr || utr.length < 6 || utr.length > 80) {
+      return res.status(400).json({ error: "Please enter a valid UTR / transaction reference number." });
+    }
+    if (!reference || reference.length > 100) {
+      return res.status(400).json({ error: "Payment reference is missing. Please reopen the payment window." });
+    }
+
+    const existingResponse = await sbAdmin(
+      `/rest/v1/payments?payment_id=eq.${encodeURIComponent(utr)}&select=id,status,user_id&limit=1`
+    );
+    const existingRows = await existingResponse.json().catch(() => []);
+    if (Array.isArray(existingRows) && existingRows.length > 0) {
+      return res.status(409).json({ error: "This UTR has already been submitted." });
+    }
+
+    const insertResponse = await sbAdmin("/rest/v1/payments", {
+      method: "POST",
+      headers: { Prefer: "return=representation" },
+      body: JSON.stringify({
+        user_id: user.id,
+        order_id: reference,
+        payment_id: utr,
+        amount_paise: PRICE_PAISE,
+        status: "created",
+      }),
+    });
+    if (!insertResponse.ok) {
+      const detail = await insertResponse.text().catch(() => "");
+      console.error("UPI payment insert failed", detail);
+      return res.status(502).json({ error: "Unable to submit your payment request. Please try again." });
+    }
+
+    return res.status(200).json({
+      success: true,
+      status: "pending",
+      message: "Payment submitted. Your UTR has been sent for verification.",
+    });
+  }
+
   return res.status(400).json({ error: "Unknown payment action." });
 }
