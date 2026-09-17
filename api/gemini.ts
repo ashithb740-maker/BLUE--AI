@@ -32,6 +32,7 @@ export default async function handler(req: RequestWithBody, res: ResponseLike) {
 
   const message = typeof body.message === "string" ? body.message.trim() : "";
   const history = Array.isArray(body.history) ? body.history : [];
+  const timeZone = typeof body.timeZone === "string" && body.timeZone.trim() ? body.timeZone.trim() : "UTC";
 
   if (!message) {
     return res.status(400).json({ error: "Message is required" });
@@ -49,7 +50,18 @@ export default async function handler(req: RequestWithBody, res: ResponseLike) {
       parts: [{ text: item.text.trim() }],
     }));
 
-  safeHistory.push({ role: "user", parts: [{ text: message }] });
+  safeHistory.push({
+    role: "user",
+    parts: [{
+      text: `[Current date/time context: ${new Intl.DateTimeFormat("en-US", {
+        dateStyle: "full",
+        timeStyle: "long",
+        timeZone,
+      }).format(new Date())}; timezone: ${timeZone}]
+
+${message}`,
+    }],
+  });
 
   try {
     const response = await fetch(
@@ -62,6 +74,11 @@ export default async function handler(req: RequestWithBody, res: ResponseLike) {
         },
         body: JSON.stringify({
           contents: safeHistory,
+          systemInstruction: {
+            parts: [{
+              text: "You are BLUE, an AI assistant. The current date and time are provided in the user's latest message. Treat that date/time as authoritative for questions about today, tomorrow, yesterday, current date, current time, day of week, or relative dates. Never invent an old date from training knowledge. Do not mention the underlying AI provider or model unless the user explicitly asks what technology powers BLUE.",
+            }],
+          },
           generationConfig: {
             temperature: 0.7,
             maxOutputTokens: 4096,
