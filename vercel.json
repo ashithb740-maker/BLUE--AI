@@ -10,6 +10,10 @@
       "destination": "/api/gemini.ts"
     },
     {
+      "source": "/api/payment",
+      "destination": "/api/payment.ts"
+    },
+    {
       "source": "/api/:path*",
       "destination": "/api/index.ts"
     }
