@@ -22,7 +22,6 @@ const THEME_FIXES = `
 [data-blue-theme="light"] { color-scheme: light; }
 [data-blue-theme="dark"] { color-scheme: dark; }
 
-/* Code must always have strong contrast. */
 .blue-response pre,
 .blue-response pre code,
 .blue-response pre code span,
@@ -43,34 +42,20 @@ const THEME_FIXES = `
   line-height: 1.65;
 }
 
-/* Light theme applies consistently even to pages/components that use hard-coded dark Tailwind classes. */
 html[data-blue-theme="light"] body { background: #f4f8fc !important; color: #10243a !important; }
-html[data-blue-theme="light"] main,
-html[data-blue-theme="light"] aside,
-html[data-blue-theme="light"] header,
-html[data-blue-theme="light"] section,
-html[data-blue-theme="light"] footer,
-html[data-blue-theme="light"] nav {
-  --tw-bg-opacity: 1;
-}
 html[data-blue-theme="light"] [class*="bg-[#08090d]"],
 html[data-blue-theme="light"] [class*="bg-[#0b0d12]"],
 html[data-blue-theme="light"] [class*="bg-[#0d0f15]"],
 html[data-blue-theme="light"] [class*="bg-[#11131a]"],
-html[data-blue-theme="light"] [class*="bg-[#171a22]"] {
-  background-color: #ffffff !important;
-}
+html[data-blue-theme="light"] [class*="bg-[#171a22]"] { background-color: #ffffff !important; }
 html[data-blue-theme="light"] [class*="bg-white/[.025]"],
 html[data-blue-theme="light"] [class*="bg-white/[.03]"],
 html[data-blue-theme="light"] [class*="bg-white/[.04]"],
 html[data-blue-theme="light"] [class*="bg-white/[.045]"],
 html[data-blue-theme="light"] [class*="bg-white/[.055]"],
-html[data-blue-theme="light"] [class*="bg-white/[.06]"] {
-  background-color: rgba(15,80,130,.045) !important;
-}
-html[data-blue-theme="light"] [class*="text-white"] { color: #16324a !important; }
-html[data-blue-theme="light"] [class*="text-white/"],
-html[data-blue-theme="light"] [class*="text-white/[."] { color: #587087 !important; }
+html[data-blue-theme="light"] [class*="bg-white/[.06]"] { background-color: rgba(15,80,130,.045) !important; }
+html[data-blue-theme="light"] [class*="text-white"]:not([class*="bg-blue"]):not([class*="bg-cyan"]):not([class*="bg-emerald"]) { color: #16324a !important; }
+html[data-blue-theme="light"] [class*="text-white/"] { color: #587087 !important; }
 html[data-blue-theme="light"] [class*="border-white"] { border-color: rgba(14,88,150,.16) !important; }
 html[data-blue-theme="light"] .blue-response h1,
 html[data-blue-theme="light"] .blue-response h2,
@@ -87,17 +72,12 @@ html[data-blue-theme="light"] .blue-response pre code,
 html[data-blue-theme="light"] .blue-response pre code span,
 html[data-blue-theme="light"] .prose pre,
 html[data-blue-theme="light"] .prose pre code,
-html[data-blue-theme="light"] .prose pre code span {
-  color: #10243a !important;
-  -webkit-text-fill-color: #10243a !important;
-}
+html[data-blue-theme="light"] .prose pre code span { color: #10243a !important; -webkit-text-fill-color: #10243a !important; }
+html[data-blue-theme="light"] .blue-theme-toggle { border-color: rgba(14,88,150,.16) !important; background: rgba(255,255,255,.92) !important; }
+html[data-blue-theme="light"] .blue-theme-toggle .blue-theme-inactive { color: #526b80 !important; }
 `;
 
-export function ThemeProvider({
-  children,
-  defaultTheme = "light",
-  switchable = false,
-}: ThemeProviderProps) {
+export function ThemeProvider({ children, defaultTheme = "light", switchable = false }: ThemeProviderProps) {
   const [theme, setTheme] = useState<Theme>(() => {
     if (switchable) {
       const stored = localStorage.getItem("theme");
@@ -123,15 +103,8 @@ export function ThemeProvider({
     style.textContent = THEME_FIXES;
   }, [theme, switchable]);
 
-  const toggleTheme = switchable
-    ? () => setTheme(prev => (prev === "light" ? "dark" : "light"))
-    : undefined;
-
-  return (
-    <ThemeContext.Provider value={{ theme, toggleTheme, setTheme, switchable }}>
-      {children}
-    </ThemeContext.Provider>
-  );
+  const toggleTheme = switchable ? () => setTheme(prev => (prev === "light" ? "dark" : "light")) : undefined;
+  return <ThemeContext.Provider value={{ theme, toggleTheme, setTheme, switchable }}>{children}</ThemeContext.Provider>;
 }
 
 export function useTheme() {
