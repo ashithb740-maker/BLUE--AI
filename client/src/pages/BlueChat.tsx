@@ -14,6 +14,10 @@ function getInitialPrompt() {
   } catch { return ""; }
 }
 
+function getTimeZone() {
+  try { return Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC"; } catch { return "UTC"; }
+}
+
 export default function BlueChat() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState(getInitialPrompt);
@@ -32,7 +36,11 @@ export default function BlueChat() {
     const nextMessages = [...messages, { role: "user" as const, text: message }];
     setMessages(nextMessages); setInput(""); setLoading(true);
     try {
-      const response = await fetch("/api/gemini", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ message, history: messages.slice(-20) }) });
+      const response = await fetch("/api/gemini", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ message, history: messages.slice(-20), timeZone: getTimeZone() }),
+      });
       const data = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(data?.error || `Request failed (${response.status})`);
       setMessages([...nextMessages, { role: "model", text: data.text || "I received an empty response." }]);
