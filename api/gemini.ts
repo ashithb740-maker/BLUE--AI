@@ -7,9 +7,11 @@ const SUPABASE_KEY = process.env.VITE_SUPABASE_PUBLISHABLE_KEY || "";
 const FREE_DAILY_TOKENS = 5000;
 const OWNER_EMAIL = (process.env.BLUE_OWNER_EMAIL || "ashith083@gmail.com").trim().toLowerCase();
 const CONFIGURED_MODEL = process.env.GEMINI_MODEL?.trim();
+// These are current Gemini API model IDs documented by Google.
 const GEMINI_MODELS = Array.from(new Set([
   CONFIGURED_MODEL,
   "gemini-3.8-flash",
+  "gemini-3.7-flash",
   "gemini-3.6-flash",
   "gemini-3.5-flash",
   "gemini-2.5-flash",
@@ -56,6 +58,12 @@ function buildGeminiHistory(history: unknown[], message: string, timeZone: strin
   return normalized;
 }
 
+function safeGeminiReason(data: any) {
+  const message = data?.error?.message;
+  if (typeof message !== "string") return "Google Gemini rejected the request.";
+  return message.replace(/AIza[0-9A-Za-z_-]{20,}/g, "[redacted key]").slice(0, 500);
+}
+
 async function generateWithGemini(apiKey: string, contents: GeminiMessage[]) {
   let lastStatus = 0;
   let lastData: any = {};
@@ -70,13 +78,12 @@ async function generateWithGemini(apiKey: string, contents: GeminiMessage[]) {
           body: JSON.stringify({
             contents,
             systemInstruction: { parts: [{ text: BLUE_SYSTEM_PROMPT }] },
-            // Gemini 3.x deprecates legacy sampling controls; keep the request minimal.
             generationConfig: { maxOutputTokens: 2048 },
           }),
         },
       );
       const data = await response.json().catch(() => ({}));
-      if (response.ok) return { response, data, model };
+      if (response.ok) return { ok: true, status: response.status, data, model };
       lastStatus = response.status;
       lastData = data;
       console.error(`Gemini ${model} failed:`, response.status, JSON.stringify(data));
@@ -85,7 +92,7 @@ async function generateWithGemini(apiKey: string, contents: GeminiMessage[]) {
     }
   }
 
-  return { response: { ok: false, status: lastStatus || 502 }, data: lastData, model: null };
+  return { ok: false, status: lastStatus || 502, data: lastData, model: null };
 }
 
 export default async function handler(req: RequestWithBody, res: ResponseLike) {
@@ -128,13 +135,18 @@ export default async function handler(req: RequestWithBody, res: ResponseLike) {
     const apiKey = process.env.GEMINI_API_KEY;
     if (!apiKey) {
       if (!isOwner) await supabase("/rest/v1/rpc/adjust_ai_tokens", bearer, { method: "POST", body: JSON.stringify({ p_delta: -estimatedTokens }) });
-      return res.status(500).json({ error: "AI service is not configured" });
+      return res.status(500).json({ error: "AI service is not configured", code: "MISSING_GEMINI_API_KEY" });
     }
 
     const result = await generateWithGemini(apiKey, buildGeminiHistory(history, message, timeZone));
-    if (!result.response.ok) {
+    if (!result.ok) {
       if (!isOwner) await supabase("/rest/v1/rpc/adjust_ai_tokens", bearer, { method: "POST", body: JSON.stringify({ p_delta: -estimatedTokens }) });
-      return res.status(502).json({ error: "BLUE could not get a response right now. Please try again.", code: "GEMINI_REQUEST_FAILED" });
+      const diagnostic = safeGeminiReason(result.data);
+      console.error("All Gemini models failed:", result.status, diagnostic);
+      return res.status(502).json({
+        error: isOwner ? `BLUE could not get a response. Gemini: ${diagnostic}` : "BLUE could not get a response right now. Please try again.",
+        code: "GEMINI_REQUEST_FAILED",
+      });
     }
 
     const data = result.data;
