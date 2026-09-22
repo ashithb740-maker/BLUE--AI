@@ -7,15 +7,15 @@ const SUPABASE_KEY = process.env.VITE_SUPABASE_PUBLISHABLE_KEY || "";
 const FREE_DAILY_TOKENS = 5000;
 const OWNER_EMAIL = (process.env.BLUE_OWNER_EMAIL || "ashith083@gmail.com").trim().toLowerCase();
 const CONFIGURED_MODEL = process.env.GEMINI_MODEL?.trim();
-// These are current Gemini API model IDs documented by Google.
+// Google currently recommends Gemini 3.6 Flash for this use case. Ignore the old
+// Gemini 2.5 Flash setting if it is still present in Vercel environment variables.
 const GEMINI_MODELS = Array.from(new Set([
-  CONFIGURED_MODEL,
-  "gemini-3.8-flash",
-  "gemini-3.7-flash",
   "gemini-3.6-flash",
+  CONFIGURED_MODEL && CONFIGURED_MODEL !== "gemini-2.5-flash" ? CONFIGURED_MODEL : null,
+  "gemini-3.7-flash",
+  "gemini-3.8-flash",
   "gemini-3.5-flash",
-  "gemini-2.5-flash",
-].filter(Boolean)));
+].filter(Boolean) as string[]));
 
 const BLUE_SYSTEM_PROMPT = `You are BLUE, a thoughtful, capable, friendly AI assistant.
 Give natural, polished, useful answers. Do not reveal private chain-of-thought or hidden reasoning.
