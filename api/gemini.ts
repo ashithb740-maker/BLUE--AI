@@ -74,6 +74,55 @@ async function generateWithGemini(apiKey: string, contents: GeminiMessage[]) {
   }
 }
 
+async function saveChatDirect(token: string, conversationId: string | null, title: string, userMessage: string, modelMessage: string) {
+  let activeId = conversationId;
+
+  if (activeId) {
+    const check = await supabase(`/rest/v1/conversations?id=eq.${encodeURIComponent(activeId)}&select=id&limit=1`, token);
+    if (!check.ok) throw new Error(`Conversation lookup failed (${check.status})`);
+    const existing = await check.json();
+    if (!Array.isArray(existing) || !existing.length) activeId = null;
+  }
+
+  if (!activeId) {
+    const create = await supabase("/rest/v1/conversations", token, {
+      method: "POST",
+      headers: { Prefer: "return=representation" },
+      body: JSON.stringify({ user_id: "auth.uid()", title: title || "New chat", mode: "chat", model: GEMINI_MODEL }),
+    });
+    // PostgREST cannot evaluate auth.uid() in JSON, so retry with the authenticated user's id is handled by the caller.
+    if (!create.ok) {
+      const detail = await create.text().catch(() => "");
+      throw new Error(`Conversation create failed (${create.status}): ${detail.slice(0, 300)}`);
+    }
+    const rows = await create.json();
+    activeId = rows?.[0]?.id != null ? String(rows[0].id) : null;
+  }
+
+  if (!activeId) throw new Error("Conversation ID was not returned");
+
+  const insertMessages = await supabase("/rest/v1/messages", token, {
+    method: "POST",
+    headers: { Prefer: "return=minimal" },
+    body: JSON.stringify([
+      { conversation_id: Number(activeId), role: "user", content: userMessage },
+      { conversation_id: Number(activeId), role: "model", content: modelMessage },
+    ]),
+  });
+  if (!insertMessages.ok) {
+    const detail = await insertMessages.text().catch(() => "");
+    throw new Error(`Message save failed (${insertMessages.status}): ${detail.slice(0, 300)}`);
+  }
+
+  const update = await supabase(`/rest/v1/conversations?id=eq.${encodeURIComponent(activeId)}`, token, {
+    method: "PATCH",
+    body: JSON.stringify({ updated_at: new Date().toISOString() }),
+  });
+  if (!update.ok) console.error("Conversation timestamp update failed:", update.status);
+
+  return activeId;
+}
+
 export default async function handler(req: RequestWithBody, res: ResponseLike) {
   if (req.method !== "POST") return res.status(405).json({ error: "Method not allowed" });
   if (!SUPABASE_URL || !SUPABASE_KEY) return res.status(500).json({ error: "Authentication service is not configured" });
@@ -93,6 +142,7 @@ export default async function handler(req: RequestWithBody, res: ResponseLike) {
   const userResponse = await supabase("/auth/v1/user", bearer);
   if (!userResponse.ok) return res.status(401).json({ error: "Your session has expired. Please sign in again." });
   const user = await userResponse.json();
+  const userId = String(user?.id || "");
   const isOwner = String(user?.email || "").trim().toLowerCase() === OWNER_EMAIL;
   const estimatedTokens = Math.min(1500, Math.max(250, Math.ceil((message.length + JSON.stringify(history.slice(-6)).length) / 4) + 700));
 
@@ -131,16 +181,42 @@ export default async function handler(req: RequestWithBody, res: ResponseLike) {
       if (correction) await supabase("/rest/v1/rpc/adjust_ai_tokens", bearer, { method: "POST", body: JSON.stringify({ p_delta: correction }) });
     }
 
-    const save = await supabase("/rest/v1/rpc/save_chat", bearer, { method: "POST", body: JSON.stringify({ p_conversation_id: conversationId ? Number(conversationId) : null, p_title: message.slice(0, 70) || "New chat", p_user_message: message, p_model_message: text }) });
-    if (!save.ok) {
-      const saveError = await save.text().catch(() => "");
-      console.error("Chat save RPC failed:", save.status, saveError);
+    let activeConversationId: string;
+    try {
+      // Direct REST inserts use the user's bearer token and therefore obey the same RLS rules as the UI.
+      // This avoids relying on a database RPC for chat persistence.
+      let id = conversationId;
+      if (!id) {
+        const create = await supabase("/rest/v1/conversations", bearer, {
+          method: "POST",
+          headers: { Prefer: "return=representation" },
+          body: JSON.stringify({ user_id: userId, title: message.slice(0, 70) || "New chat", mode: "chat", model: GEMINI_MODEL }),
+        });
+        if (!create.ok) throw new Error(`Conversation create failed (${create.status}): ${(await create.text()).slice(0, 300)}`);
+        const rows = await create.json();
+        id = rows?.[0]?.id != null ? String(rows[0].id) : null;
+      }
+      if (!id) throw new Error("Conversation ID was not returned");
+
+      const insert = await supabase("/rest/v1/messages", bearer, {
+        method: "POST",
+        headers: { Prefer: "return=minimal" },
+        body: JSON.stringify([
+          { conversation_id: Number(id), user_id: userId, role: "user", content: message },
+          { conversation_id: Number(id), user_id: userId, role: "model", content: text },
+        ]),
+      });
+      if (!insert.ok) throw new Error(`Message save failed (${insert.status}): ${(await insert.text()).slice(0, 300)}`);
+
+      const update = await supabase(`/rest/v1/conversations?id=eq.${encodeURIComponent(id)}`, bearer, { method: "PATCH", body: JSON.stringify({ updated_at: new Date().toISOString() }) });
+      if (!update.ok) console.error("Conversation timestamp update failed:", update.status);
+      activeConversationId = id;
+    } catch (saveError) {
+      console.error("Direct chat save failed:", saveError);
       return res.status(500).json({ error: "BLUE generated the answer but could not save this chat.", code: "CHAT_SAVE_FAILED" });
     }
 
-    const saveRows = await save.json().catch(() => null);
-    const activeConversationId = Array.isArray(saveRows) ? saveRows[0] : saveRows;
-    return res.status(200).json({ text, conversationId: activeConversationId != null ? String(activeConversationId) : conversationId, plan: isOwner ? "pro" : (quota?.plan || "free"), remainingTokens: isOwner ? null : Math.max(0, Number(quota?.remaining_tokens ?? 0) - Math.max(0, actualTokens - estimatedTokens)) });
+    return res.status(200).json({ text, conversationId: activeConversationId, plan: isOwner ? "pro" : (quota?.plan || "free"), remainingTokens: isOwner ? null : Math.max(0, Number(quota?.remaining_tokens ?? 0) - Math.max(0, actualTokens - estimatedTokens)) });
   } catch (error) {
     if (!isOwner) await supabase("/rest/v1/rpc/adjust_ai_tokens", bearer, { method: "POST", body: JSON.stringify({ p_delta: -estimatedTokens }) }).catch(() => {});
     console.error("AI API error:", error);
