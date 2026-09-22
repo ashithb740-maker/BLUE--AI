@@ -6,16 +6,8 @@ const SUPABASE_URL = process.env.VITE_SUPABASE_URL || "";
 const SUPABASE_KEY = process.env.VITE_SUPABASE_PUBLISHABLE_KEY || "";
 const FREE_DAILY_TOKENS = 5000;
 const OWNER_EMAIL = (process.env.BLUE_OWNER_EMAIL || "ashith083@gmail.com").trim().toLowerCase();
-const CONFIGURED_MODEL = process.env.GEMINI_MODEL?.trim();
-// Google currently recommends Gemini 3.6 Flash for this use case. Ignore the old
-// Gemini 2.5 Flash setting if it is still present in Vercel environment variables.
-const GEMINI_MODELS = Array.from(new Set([
-  "gemini-3.6-flash",
-  CONFIGURED_MODEL && CONFIGURED_MODEL !== "gemini-2.5-flash" ? CONFIGURED_MODEL : null,
-  "gemini-3.7-flash",
-  "gemini-3.8-flash",
-  "gemini-3.5-flash",
-].filter(Boolean) as string[]));
+const GEMINI_MODEL = "gemini-3.6-flash";
+const GEMINI_TIMEOUT_MS = 30000;
 
 const BLUE_SYSTEM_PROMPT = `You are BLUE, a thoughtful, capable, friendly AI assistant.
 Give natural, polished, useful answers. Do not reveal private chain-of-thought or hidden reasoning.
@@ -49,9 +41,7 @@ function buildGeminiHistory(history: unknown[], message: string, timeZone: strin
     else normalized.push({ role: item.role, parts: [{ text }] });
   }
   while (normalized.length && normalized[0].role !== "user") normalized.shift();
-  const currentText = `[Current date/time: ${new Intl.DateTimeFormat("en-US", {
-    dateStyle: "full", timeStyle: "long", timeZone,
-  }).format(new Date())}; timezone: ${timeZone}]\n\n${message}`;
+  const currentText = `[Current date/time: ${new Intl.DateTimeFormat("en-US", { dateStyle: "full", timeStyle: "long", timeZone }).format(new Date())}; timezone: ${timeZone}]\n\n${message}`;
   const last = normalized[normalized.length - 1];
   if (last?.role === "user") last.parts[0].text += `\n\n${currentText}`;
   else normalized.push({ role: "user", parts: [{ text: currentText }] });
@@ -65,40 +55,28 @@ function safeGeminiReason(data: any) {
 }
 
 async function generateWithGemini(apiKey: string, contents: GeminiMessage[]) {
-  let lastStatus = 0;
-  let lastData: any = {};
-
-  for (const model of GEMINI_MODELS) {
-    try {
-      const response = await fetch(
-        `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`,
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json", "x-goog-api-key": apiKey },
-          body: JSON.stringify({
-            contents,
-            systemInstruction: { parts: [{ text: BLUE_SYSTEM_PROMPT }] },
-            generationConfig: { maxOutputTokens: 2048 },
-          }),
-        },
-      );
-      const data = await response.json().catch(() => ({}));
-      if (response.ok) return { ok: true, status: response.status, data, model };
-      lastStatus = response.status;
-      lastData = data;
-      console.error(`Gemini ${model} failed:`, response.status, JSON.stringify(data));
-    } catch (error) {
-      console.error(`Gemini ${model} network error:`, error);
-    }
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), GEMINI_TIMEOUT_MS);
+  try {
+    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`, {
+      method: "POST",
+      signal: controller.signal,
+      headers: { "Content-Type": "application/json", "x-goog-api-key": apiKey },
+      body: JSON.stringify({ contents, systemInstruction: { parts: [{ text: BLUE_SYSTEM_PROMPT }] }, generationConfig: { maxOutputTokens: 2048 } }),
+    });
+    const data = await response.json().catch(() => ({}));
+    return { ok: response.ok, status: response.status, data };
+  } catch (error: any) {
+    if (error?.name === "AbortError") return { ok: false, status: 504, data: { error: { message: "Gemini request timed out after 30 seconds." } } };
+    throw error;
+  } finally {
+    clearTimeout(timer);
   }
-
-  return { ok: false, status: lastStatus || 502, data: lastData, model: null };
 }
 
 export default async function handler(req: RequestWithBody, res: ResponseLike) {
   if (req.method !== "POST") return res.status(405).json({ error: "Method not allowed" });
   if (!SUPABASE_URL || !SUPABASE_KEY) return res.status(500).json({ error: "Authentication service is not configured" });
-
   const bearer = getBearer(req);
   if (!bearer.startsWith("Bearer ")) return res.status(401).json({ error: "Please sign in to use BLUE." });
 
@@ -120,15 +98,10 @@ export default async function handler(req: RequestWithBody, res: ResponseLike) {
 
   let quota: any = { allowed: true, remaining_tokens: null, plan: isOwner ? "pro" : "free" };
   if (!isOwner) {
-    const q = await supabase("/rest/v1/rpc/reserve_ai_tokens", bearer, {
-      method: "POST", body: JSON.stringify({ p_tokens: estimatedTokens, p_free_limit: FREE_DAILY_TOKENS }),
-    });
+    const q = await supabase("/rest/v1/rpc/reserve_ai_tokens", bearer, { method: "POST", body: JSON.stringify({ p_tokens: estimatedTokens, p_free_limit: FREE_DAILY_TOKENS }) });
     const rows = q.ok ? await q.json() : null;
     quota = Array.isArray(rows) ? rows[0] : rows;
-    if (!q.ok || !quota?.allowed) return res.status(429).json({
-      error: "You've used today's 5,000 free BLUE tokens. Your free allowance resets at 12:00 AM IST.",
-      code: "DAILY_LIMIT", remainingTokens: quota?.remaining_tokens ?? 0,
-    });
+    if (!q.ok || !quota?.allowed) return res.status(429).json({ error: "You've used today's 5,000 free BLUE tokens. Your free allowance resets at 12:00 AM IST.", code: "DAILY_LIMIT", remainingTokens: quota?.remaining_tokens ?? 0 });
   }
 
   try {
@@ -137,16 +110,12 @@ export default async function handler(req: RequestWithBody, res: ResponseLike) {
       if (!isOwner) await supabase("/rest/v1/rpc/adjust_ai_tokens", bearer, { method: "POST", body: JSON.stringify({ p_delta: -estimatedTokens }) });
       return res.status(500).json({ error: "AI service is not configured", code: "MISSING_GEMINI_API_KEY" });
     }
-
     const result = await generateWithGemini(apiKey, buildGeminiHistory(history, message, timeZone));
     if (!result.ok) {
       if (!isOwner) await supabase("/rest/v1/rpc/adjust_ai_tokens", bearer, { method: "POST", body: JSON.stringify({ p_delta: -estimatedTokens }) });
       const diagnostic = safeGeminiReason(result.data);
-      console.error("All Gemini models failed:", result.status, diagnostic);
-      return res.status(502).json({
-        error: isOwner ? `BLUE could not get a response. Gemini: ${diagnostic}` : "BLUE could not get a response right now. Please try again.",
-        code: "GEMINI_REQUEST_FAILED",
-      });
+      console.error("Gemini request failed:", result.status, diagnostic);
+      return res.status(result.status === 504 ? 504 : 502).json({ error: isOwner ? `BLUE could not get a response. Gemini: ${diagnostic}` : "BLUE could not get a response right now. Please try again.", code: "GEMINI_REQUEST_FAILED" });
     }
 
     const data = result.data;
@@ -162,28 +131,16 @@ export default async function handler(req: RequestWithBody, res: ResponseLike) {
       if (correction) await supabase("/rest/v1/rpc/adjust_ai_tokens", bearer, { method: "POST", body: JSON.stringify({ p_delta: correction }) });
     }
 
-    const save = await supabase("/rest/v1/rpc/save_chat", bearer, {
-      method: "POST",
-      body: JSON.stringify({
-        p_conversation_id: conversationId ? Number(conversationId) : null,
-        p_title: message.slice(0, 70) || "New chat",
-        p_user_message: message,
-        p_model_message: text,
-      }),
-    });
+    const save = await supabase("/rest/v1/rpc/save_chat", bearer, { method: "POST", body: JSON.stringify({ p_conversation_id: conversationId ? Number(conversationId) : null, p_title: message.slice(0, 70) || "New chat", p_user_message: message, p_model_message: text }) });
     if (!save.ok) {
-      console.error("Chat save RPC failed:", save.status, await save.text().catch(() => ""));
+      const saveError = await save.text().catch(() => "");
+      console.error("Chat save RPC failed:", save.status, saveError);
       return res.status(500).json({ error: "BLUE generated the answer but could not save this chat.", code: "CHAT_SAVE_FAILED" });
     }
 
     const saveRows = await save.json().catch(() => null);
     const activeConversationId = Array.isArray(saveRows) ? saveRows[0] : saveRows;
-    return res.status(200).json({
-      text,
-      conversationId: activeConversationId != null ? String(activeConversationId) : conversationId,
-      plan: isOwner ? "pro" : (quota?.plan || "free"),
-      remainingTokens: isOwner ? null : Math.max(0, Number(quota?.remaining_tokens ?? 0) - Math.max(0, actualTokens - estimatedTokens)),
-    });
+    return res.status(200).json({ text, conversationId: activeConversationId != null ? String(activeConversationId) : conversationId, plan: isOwner ? "pro" : (quota?.plan || "free"), remainingTokens: isOwner ? null : Math.max(0, Number(quota?.remaining_tokens ?? 0) - Math.max(0, actualTokens - estimatedTokens)) });
   } catch (error) {
     if (!isOwner) await supabase("/rest/v1/rpc/adjust_ai_tokens", bearer, { method: "POST", body: JSON.stringify({ p_delta: -estimatedTokens }) }).catch(() => {});
     console.error("AI API error:", error);
