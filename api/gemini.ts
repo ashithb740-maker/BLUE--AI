@@ -3,8 +3,6 @@ type ResponseLike = { status: (code: number) => ResponseLike; json: (value: unkn
 
 const SUPABASE_URL = process.env.VITE_SUPABASE_URL || "";
 const SUPABASE_KEY = process.env.VITE_SUPABASE_PUBLISHABLE_KEY || "";
-const FREE_DAILY_TOKENS = 5000;
-const OWNER_EMAIL = (process.env.BLUE_OWNER_EMAIL || "ashith083@gmail.com").trim().toLowerCase();
 const GEMINI_MODEL = "gemini-3.6-flash";
 const GEMINI_TIMEOUT_MS = 45000;
 
@@ -55,7 +53,6 @@ async function generateWithGemini(apiKey: string, input: string) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), GEMINI_TIMEOUT_MS);
   try {
-    // Google now recommends the Interactions API for new Gemini applications.
     const response = await fetch("https://generativelanguage.googleapis.com/v1beta/interactions", {
       method: "POST",
       signal: controller.signal,
@@ -120,53 +117,24 @@ export default async function handler(req: RequestWithBody, res: ResponseLike) {
   if (!userResponse.ok) return res.status(401).json({ error: "Your session has expired. Please sign in again." });
   const user = await userResponse.json();
   const userId = String(user?.id || "");
-  const isOwner = String(user?.email || "").trim().toLowerCase() === OWNER_EMAIL;
-  const estimatedTokens = Math.min(1500, Math.max(250, Math.ceil((message.length + JSON.stringify(history.slice(-6)).length) / 4) + 700));
-
-  let quota: any = { allowed: true, remaining_tokens: null, plan: isOwner ? "pro" : "free" };
-  if (!isOwner) {
-    const q = await supabase("/rest/v1/rpc/reserve_ai_tokens", bearer, {
-      method: "POST",
-      body: JSON.stringify({ p_tokens: estimatedTokens, p_free_limit: FREE_DAILY_TOKENS }),
-    });
-    const rows = q.ok ? await q.json() : null;
-    quota = Array.isArray(rows) ? rows[0] : rows;
-    if (!q.ok || !quota?.allowed) return res.status(429).json({
-      error: "You've used today's 5,000 free BLUE tokens. Your free allowance resets at 12:00 AM IST.",
-      code: "DAILY_LIMIT", remainingTokens: quota?.remaining_tokens ?? 0,
-    });
-  }
 
   try {
     const apiKey = process.env.GEMINI_API_KEY;
-    if (!apiKey) {
-      if (!isOwner) await supabase("/rest/v1/rpc/adjust_ai_tokens", bearer, { method: "POST", body: JSON.stringify({ p_delta: -estimatedTokens }) });
-      return res.status(500).json({ error: "AI service is not configured", code: "MISSING_GEMINI_API_KEY" });
-    }
+    if (!apiKey) return res.status(500).json({ error: "AI service is not configured", code: "MISSING_GEMINI_API_KEY" });
 
     const result = await generateWithGemini(apiKey, buildInteractionInput(history, message, timeZone));
     if (!result.ok) {
-      if (!isOwner) await supabase("/rest/v1/rpc/adjust_ai_tokens", bearer, { method: "POST", body: JSON.stringify({ p_delta: -estimatedTokens }) });
       const diagnostic = safeGeminiReason(result.data);
       console.error("Gemini Interactions request failed:", result.status, diagnostic);
       return res.status(result.status === 504 ? 504 : 502).json({
-        error: isOwner ? `BLUE could not get a response. Gemini: ${diagnostic}` : "BLUE could not get a response right now. Please try again.",
+        error: `BLUE could not get a response. Gemini: ${diagnostic}`,
         code: "GEMINI_REQUEST_FAILED",
       });
     }
 
     const data = result.data;
     const text = extractInteractionText(data);
-    if (!text) {
-      if (!isOwner) await supabase("/rest/v1/rpc/adjust_ai_tokens", bearer, { method: "POST", body: JSON.stringify({ p_delta: -estimatedTokens }) });
-      return res.status(502).json({ error: "BLUE received an empty response. Please try again." });
-    }
-
-    const actualTokens = Number(data?.usage?.total_tokens ?? 0);
-    if (!isOwner && Number.isFinite(actualTokens) && actualTokens > 0) {
-      const correction = Math.max(-estimatedTokens, Math.min(6000, actualTokens - estimatedTokens));
-      if (correction) await supabase("/rest/v1/rpc/adjust_ai_tokens", bearer, { method: "POST", body: JSON.stringify({ p_delta: correction }) });
-    }
+    if (!text) return res.status(502).json({ error: "BLUE received an empty response. Please try again." });
 
     let activeConversationId = conversationId;
     try {
@@ -204,11 +172,10 @@ export default async function handler(req: RequestWithBody, res: ResponseLike) {
     return res.status(200).json({
       text,
       conversationId: activeConversationId,
-      plan: isOwner ? "pro" : (quota?.plan || "free"),
-      remainingTokens: isOwner ? null : Math.max(0, Number(quota?.remaining_tokens ?? 0) - Math.max(0, actualTokens - estimatedTokens)),
+      plan: "free",
+      remainingTokens: null,
     });
   } catch (error) {
-    if (!isOwner) await supabase("/rest/v1/rpc/adjust_ai_tokens", bearer, { method: "POST", body: JSON.stringify({ p_delta: -estimatedTokens }) }).catch(() => {});
     console.error("AI API error:", error);
     return res.status(500).json({ error: "BLUE could not reach the AI service. Please try again." });
   }
