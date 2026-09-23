@@ -48,20 +48,11 @@ async function generateWithGemini(apiKey: string, input: string) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), GEMINI_TIMEOUT_MS);
   try {
-    // Use the current stable Interactions API shape documented by Google.
     const response = await fetch("https://generativelanguage.googleapis.com/v1/interactions", {
       method: "POST",
       signal: controller.signal,
-      headers: {
-        "Content-Type": "application/json",
-        "x-goog-api-key": apiKey,
-      },
-      body: JSON.stringify({
-        model: GEMINI_MODEL,
-        input,
-        system_instruction: BLUE_SYSTEM_PROMPT,
-        store: false,
-      }),
+      headers: { "Content-Type": "application/json", "x-goog-api-key": apiKey },
+      body: JSON.stringify({ model: GEMINI_MODEL, input, system_instruction: BLUE_SYSTEM_PROMPT, store: false }),
     });
     const data = await response.json().catch(() => ({}));
     return { ok: response.ok, status: response.status, data };
@@ -135,11 +126,12 @@ export default async function handler(req: RequestWithBody, res: ResponseLike) {
       headers: { Prefer: "return=minimal" },
       body: JSON.stringify([
         { conversation_id: Number(conversationId), user_id: userId, role: "user", content: message },
-        { conversation_id: Number(conversationId), user_id: userId, role: "model", content: text },
+        { conversation_id: Number(conversationId), user_id: userId, role: "assistant", content: text },
       ]),
     });
     if (!insert.ok) throw new Error(`Message save failed (${insert.status}): ${(await insert.text()).slice(0, 300)}`);
-    await supabase(`/rest/v1/conversations?id=eq.${encodeURIComponent(conversationId)}`, bearer, { method: "PATCH", body: JSON.stringify({ updated_at: new Date().toISOString() }) });
+    const update = await supabase(`/rest/v1/conversations?id=eq.${encodeURIComponent(conversationId)}`, bearer, { method: "PATCH", body: JSON.stringify({ updated_at: new Date().toISOString() }) });
+    if (!update.ok) console.error("Conversation timestamp update failed:", update.status);
   } catch (error) {
     console.error("Chat save failed:", error);
     return res.status(500).json({ error: "BLUE generated the answer but could not save this chat.", code: "CHAT_SAVE_FAILED" });
