@@ -29,98 +29,88 @@ async function supabase(path: string, token: string, options: RequestInit = {}) 
 }
 
 function buildContents(history: unknown[], message: string, timeZone: string) {
-  const contents: any[] = [];
+  const raw: any[] = [];
+
   for (const item of history.slice(-20) as any[]) {
     if ((item?.role !== "user" && item?.role !== "model") || typeof item?.text !== "string") continue;
     const text = item.text.trim();
     if (!text) continue;
-    contents.push({
-      role: item.role === "model" ? "model" : "user",
-      parts: [{ text }],
-    });
+
+    const role = item.role === "model" ? "model" : "user";
+    const previous = raw[raw.length - 1];
+
+    // Gemini requires a valid conversational sequence. Merge accidental
+    // consecutive turns so one failed/duplicated UI save cannot break the next message.
+    if (previous?.role === role) {
+      previous.parts[0].text += "\n\n" + text;
+    } else {
+      raw.push({ role, parts: [{ text }] });
+    }
   }
+
+  // A model turn cannot be the final turn. The current user message is always appended.
+  // If old data starts with a model turn, discard it rather than sending an invalid request.
+  while (raw.length && raw[0].role === "model") raw.shift();
+
   const now = new Intl.DateTimeFormat("en-US", {
     dateStyle: "full",
     timeStyle: "long",
     timeZone,
   }).format(new Date());
-  contents.push({
-    role: "user",
-    parts: [{ text: `${message}\n\nCurrent date/time: ${now}; timezone: ${timeZone}` }],
-  });
-  return contents;
+
+  const currentText = `${message}\n\nCurrent date/time: ${now}; timezone: ${timeZone}`;
+  if (raw.length && raw[raw.length - 1].role === "user") {
+    raw[raw.length - 1].parts[0].text += "\n\n" + currentText;
+  } else {
+    raw.push({ role: "user", parts: [{ text: currentText }] });
+  }
+
+  return raw;
 }
 
 async function generateWithAI(apiKey: string, contents: any[]) {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), AI_TIMEOUT_MS);
+  const requestBody = JSON.stringify({
+    system_instruction: {
+      parts: [{ text: BLUE_SYSTEM_PROMPT }],
+    },
+    contents,
+    generationConfig: {
+      maxOutputTokens: 2048,
+    },
+  });
 
-  try {
-    // Primary fast chat path.
-    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${AI_MODEL}:generateContent`, {
-      method: "POST",
-      signal: controller.signal,
-      headers: {
-        "Content-Type": "application/json",
-        "x-goog-api-key": apiKey,
-      },
-      body: JSON.stringify({
-        system_instruction: {
-          parts: [{ text: BLUE_SYSTEM_PROMPT }],
-        },
-        contents,
-        generationConfig: {
-          maxOutputTokens: 2048,
-        },
-      }),
-    });
-    const data = await response.json().catch(() => ({}));
-
-    if (response.ok) return { ok: true, status: response.status, data };
-
-    // Compatibility fallback: if the direct endpoint rejects the request/model,
-    // retry through the newer interaction endpoint before showing an error.
-    const fallbackController = new AbortController();
-    const fallbackTimer = setTimeout(() => fallbackController.abort(), 30000);
+  async function call() {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), AI_TIMEOUT_MS);
     try {
-      const input = contents.map((item: any) => {
-        const role = item.role === "model" ? "BLUE" : "User";
-        const text = Array.isArray(item.parts) ? item.parts.map((p: any) => p?.text || "").join("") : "";
-        return `${role}: ${text}`;
-      }).join("\n\n");
-
-      const fallback = await fetch("https://generativelanguage.googleapis.com/v1beta/interactions", {
+      const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${AI_MODEL}:generateContent`, {
         method: "POST",
-        signal: fallbackController.signal,
+        signal: controller.signal,
         headers: {
           "Content-Type": "application/json",
           "x-goog-api-key": apiKey,
         },
-        body: JSON.stringify({
-          model: AI_MODEL,
-          input,
-          system_instruction: BLUE_SYSTEM_PROMPT,
-          stream: false,
-          store: false,
-          generation_config: {
-            max_output_tokens: 2048,
-            thinking_level: "minimal",
-          },
-        }),
+        body: requestBody,
       });
-      const fallbackData = await fallback.json().catch(() => ({}));
-      if (fallback.ok) return { ok: true, status: fallback.status, data: fallbackData, interaction: true };
-      return { ok: false, status: fallback.status || response.status, data: fallbackData };
+      const data = await response.json().catch(() => ({}));
+      return { ok: response.ok, status: response.status, data };
     } catch (error: any) {
       return { ok: false, status: error?.name === "AbortError" ? 504 : 502, data: {} };
     } finally {
-      clearTimeout(fallbackTimer);
+      clearTimeout(timer);
     }
-  } catch (error: any) {
-    return { ok: false, status: error?.name === "AbortError" ? 504 : 502, data: {} };
-  } finally {
-    clearTimeout(timer);
   }
+
+  let result = await call();
+
+  // Retry transient provider/network failures once. This is especially useful
+  // when several different questions are asked in the same conversation.
+  if (!result.ok && [408, 429, 500, 502, 503, 504].includes(result.status)) {
+    await new Promise(resolve => setTimeout(resolve, 350));
+    result = await call();
+  }
+
+  return result;
 }
 function extractText(data: any) {
   if (typeof data?.output_text === "string" && data.output_text.trim()) return data.output_text.trim();
