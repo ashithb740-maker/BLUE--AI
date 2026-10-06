@@ -54,9 +54,9 @@ function buildContents(history: unknown[], message: string, timeZone: string) {
 async function generateWithAI(apiKey: string, contents: any[]) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), AI_TIMEOUT_MS);
+
   try {
-    // Use the stable, simple text-generation path for BLUE's normal chat.
-    // Google documents gemini-3.6-flash with models.generateContent.
+    // Primary fast chat path.
     const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${AI_MODEL}:generateContent`, {
       method: "POST",
       signal: controller.signal,
@@ -73,27 +73,70 @@ async function generateWithAI(apiKey: string, contents: any[]) {
           maxOutputTokens: 2048,
           temperature: 0.7,
         },
-        tools: [{ google_search: {} }],
       }),
     });
     const data = await response.json().catch(() => ({}));
-    return { ok: response.ok, status: response.status, data };
+
+    if (response.ok) return { ok: true, status: response.status, data };
+
+    // Compatibility fallback: if the direct endpoint rejects the request/model,
+    // retry through the newer interaction endpoint before showing an error.
+    const fallbackController = new AbortController();
+    const fallbackTimer = setTimeout(() => fallbackController.abort(), 30000);
+    try {
+      const input = contents.map((item: any) => {
+        const role = item.role === "model" ? "BLUE" : "User";
+        const text = Array.isArray(item.parts) ? item.parts.map((p: any) => p?.text || "").join("") : "";
+        return `${role}: ${text}`;
+      }).join("\n\n");
+
+      const fallback = await fetch("https://generativelanguage.googleapis.com/v1beta/interactions", {
+        method: "POST",
+        signal: fallbackController.signal,
+        headers: {
+          "Content-Type": "application/json",
+          "x-goog-api-key": apiKey,
+        },
+        body: JSON.stringify({
+          model: AI_MODEL,
+          input,
+          system_instruction: BLUE_SYSTEM_PROMPT,
+          stream: false,
+          store: false,
+          generation_config: {
+            max_output_tokens: 2048,
+            thinking_level: "minimal",
+          },
+        }),
+      });
+      const fallbackData = await fallback.json().catch(() => ({}));
+      if (fallback.ok) return { ok: true, status: fallback.status, data: fallbackData, interaction: true };
+      return { ok: false, status: fallback.status || response.status, data: fallbackData };
+    } catch (error: any) {
+      return { ok: false, status: error?.name === "AbortError" ? 504 : 502, data: {} };
+    } finally {
+      clearTimeout(fallbackTimer);
+    }
   } catch (error: any) {
-    if (error?.name === "AbortError") return { ok: false, status: 504, data: {} };
-    return { ok: false, status: 502, data: {} };
+    return { ok: false, status: error?.name === "AbortError" ? 504 : 502, data: {} };
   } finally {
     clearTimeout(timer);
   }
 }
-
 function extractText(data: any) {
+  if (typeof data?.output_text === "string" && data.output_text.trim()) return data.output_text.trim();
   const parts = data?.candidates?.[0]?.content?.parts;
-  if (!Array.isArray(parts)) return "";
-  return parts
-    .filter((part: any) => typeof part?.text === "string")
-    .map((part: any) => part.text)
-    .join("\n")
-    .trim();
+  if (Array.isArray(parts)) {
+    return parts.filter((part: any) => typeof part?.text === "string").map((part: any) => part.text).join("\n").trim();
+  }
+  const outputParts: string[] = [];
+  for (const step of Array.isArray(data?.steps) ? data.steps : []) {
+    if (step?.type !== "model_output") continue;
+    for (const content of Array.isArray(step?.content) ? step.content : []) {
+      if (content?.type === "text" && typeof content.text === "string") outputParts.push(content.text);
+    }
+  }
+  return outputParts.join("\n").trim();
 }
 
 export default async function handler(req: RequestWithBody, res: ResponseLike) {
