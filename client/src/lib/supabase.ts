@@ -111,3 +111,8 @@ export async function getProfile() {
 }
 
 export { SUPABASE_URL };
+
+
+export async function sendPasswordResetOtp(email: string) { return request('/auth/v1/recover', { method: 'POST', body: JSON.stringify({ email }) }); }
+export async function verifyPasswordResetOtp(email: string, token: string) { const data = await request('/auth/v1/verify', { method: 'POST', body: JSON.stringify({ email, token, type: 'recovery' }) }); const session = { access_token: data.access_token, refresh_token: data.refresh_token, user: data.user } as Session; setSession(session); return session; }
+export async function updatePassword(newPassword: string) { const session = getSession(); if (!session) throw new Error('Please verify the code first.'); await request('/auth/v1/user', { method: 'PUT', body: JSON.stringify({ password: newPassword }) }, session.access_token); }
