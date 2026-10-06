@@ -65,13 +65,12 @@ async function generateWithAI(apiKey: string, contents: any[]) {
         "x-goog-api-key": apiKey,
       },
       body: JSON.stringify({
-        systemInstruction: {
+        system_instruction: {
           parts: [{ text: BLUE_SYSTEM_PROMPT }],
         },
         contents,
         generationConfig: {
           maxOutputTokens: 2048,
-          temperature: 0.7,
         },
       }),
     });
