@@ -65,16 +65,15 @@ async function generateWithAI(apiKey: string, contents: any[]) {
         "x-goog-api-key": apiKey,
       },
       body: JSON.stringify({
-        system_instruction: {
+        systemInstruction: {
           parts: [{ text: BLUE_SYSTEM_PROMPT }],
         },
         contents,
         generationConfig: {
           maxOutputTokens: 2048,
-          thinkingConfig: {
-            thinkingLevel: "low",
-          },
+          temperature: 0.7,
         },
+        tools: [{ google_search: {} }],
       }),
     });
     const data = await response.json().catch(() => ({}));
